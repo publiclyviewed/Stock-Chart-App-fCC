@@ -13,6 +13,8 @@ import {
   Tooltip,
   Legend,
 } from 'chart.js';
+// NEW: Import specific Chart.js utilities for tooltips
+import { Tooltip as ChartTooltip } from 'chart.js';
 
 ChartJS.register(
   CategoryScale,
@@ -20,7 +22,7 @@ ChartJS.register(
   PointElement,
   LineElement,
   Title,
-  Tooltip,
+  Tooltip, // Ensure Tooltip is registered
   Legend
 );
 
@@ -43,7 +45,7 @@ function App() {
   const [stocks, setStocks] = useState([]);
   const [newStockSymbol, setNewStockSymbol] = useState('');
   const [message, setMessage] = useState('');
-  const [loading, setLoading] = useState(false); // NEW: Loading state
+  const [loading, setLoading] = useState(false);
 
   const colorIndexRef = useRef(0);
 
@@ -54,11 +56,10 @@ function App() {
   };
 
   useEffect(() => {
-    // Initial connection feedback (optional, but good for debugging)
     socket.on('connect', () => {
       console.log('Connected to server via Socket.IO');
       setMessage('Connected to real-time updates.');
-      setTimeout(() => setMessage(''), 3000); // Clear message after 3 seconds
+      setTimeout(() => setMessage(''), 3000);
     });
 
     socket.on('disconnect', () => {
@@ -72,7 +73,7 @@ function App() {
         ...stock,
         color: getNextColor()
       })));
-      setLoading(false); // Stop loading after initial data
+      setLoading(false);
     });
 
     socket.on('stockAdded', (stockData) => {
@@ -84,45 +85,41 @@ function App() {
         return prevStocks;
       });
       setMessage(`${stockData.symbol} added successfully!`);
-      setTimeout(() => setMessage(''), 3000); // Clear success message
-      setLoading(false); // Stop loading
+      setTimeout(() => setMessage(''), 3000);
+      setLoading(false);
     });
 
     socket.on('stockRemoved', (symbol) => {
       console.log('Stock removed:', symbol);
       setStocks(prevStocks => prevStocks.filter(s => s.symbol !== symbol));
       setMessage(`${symbol} removed successfully.`);
-      setTimeout(() => setMessage(''), 3000); // Clear success message
-      setLoading(false); // Stop loading
+      setTimeout(() => setMessage(''), 3000);
+      setLoading(false);
     });
 
     socket.on('stockAlreadyExists', (stockData) => {
       console.log('Stock already exists feedback:', stockData.symbol);
       setMessage(`${stockData.symbol} is already on the chart.`);
       setStocks(prevStocks => {
-        // Ensure it's on the chart, assign color if missing (for cases where user adds it but it was already present by another user)
         if (!prevStocks.some(s => s.symbol === stockData.symbol)) {
             return [...prevStocks, { ...stockData, color: getNextColor() }];
         }
         return prevStocks;
       });
-      setLoading(false); // Stop loading
+      setLoading(false);
     });
 
-    socket.on('stockError', ({ symbol, message: errorMessage }) => { // Renamed message to errorMessage to avoid conflict
+    socket.on('stockError', ({ symbol, message: errorMessage }) => {
       console.error(`Error with stock ${symbol}:`, errorMessage);
-      setMessage(`Error: ${errorMessage}`); // Display more specific error
-      setLoading(false); // Stop loading
+      setMessage(`Error: ${errorMessage}`);
+      setLoading(false);
     });
 
-    // Handle Alpha Vantage specific rate limit message from server
     socket.on('rateLimitExceeded', ({ symbol, message: errorMessage }) => {
         setMessage(`Rate Limit Exceeded for ${symbol}. Please wait a minute before trying again.`);
         setLoading(false);
     });
 
-
-    // Cleanup
     return () => {
       socket.off('connect');
       socket.off('disconnect');
@@ -131,7 +128,7 @@ function App() {
       socket.off('stockRemoved');
       socket.off('stockAlreadyExists');
       socket.off('stockError');
-      socket.off('rateLimitExceeded'); // Clean up new listener
+      socket.off('rateLimitExceeded');
     };
   }, []);
 
@@ -145,14 +142,16 @@ function App() {
       tension: 0.1,
       pointRadius: 0,
       borderWidth: 2,
+      // Store full data for tooltip access
+      fullData: stock.data,
     })),
   };
 
   const handleAddStock = (e) => {
     e.preventDefault();
     if (newStockSymbol.trim()) {
-      setLoading(true); // Start loading when request is sent
-      setMessage(`Adding ${newStockSymbol}...`); // Show loading message
+      setLoading(true);
+      setMessage(`Adding ${newStockSymbol}...`);
       socket.emit('addStock', newStockSymbol.trim().toUpperCase());
       setNewStockSymbol('');
     } else {
@@ -162,8 +161,8 @@ function App() {
   };
 
   const handleRemoveStock = (symbolToRemove) => {
-    setLoading(true); // Start loading
-    setMessage(`Removing ${symbolToRemove}...`); // Show loading message
+    setLoading(true);
+    setMessage(`Removing ${symbolToRemove}...`);
     socket.emit('removeStock', symbolToRemove);
   };
 
@@ -173,33 +172,104 @@ function App() {
     plugins: {
       legend: {
         position: 'top',
+        labels: {
+            font: {
+                size: 14 // Make legend labels a bit bigger
+            }
+        }
       },
       title: {
         display: true,
         text: 'Stock Market Trends (Daily Close Price)',
+        font: {
+            size: 18 // Make title a bit bigger
+        },
+        color: '#333'
       },
       tooltip: {
         mode: 'index',
         intersect: false,
+        // NEW: Custom tooltip callbacks
+        callbacks: {
+            title: function(context) {
+                // Return the date
+                return context[0].label;
+            },
+            label: function(context) {
+                const dataset = context.dataset;
+                const index = context.dataIndex;
+                const symbol = dataset.label;
+                const fullDailyData = dataset.fullData[index]; // Access the full data for the specific day
+
+                if (fullDailyData) {
+                    return [
+                        `Symbol: ${symbol}`,
+                        `Open: ${fullDailyData.open.toFixed(2)}`,
+                        `High: ${fullDailyData.high.toFixed(2)}`,
+                        `Low: ${fullDailyData.low.toFixed(2)}`,
+                        `Close: ${fullDailyData.close.toFixed(2)}`,
+                        `Volume: ${fullDailyData.volume.toLocaleString()}`
+                    ];
+                }
+                return `Close: ${context.formattedValue}`;
+            }
+        },
+        titleFont: {
+            size: 14,
+            weight: 'bold'
+        },
+        bodyFont: {
+            size: 12
+        },
+        padding: 10,
+        borderRadius: 5,
+        backgroundColor: 'rgba(0,0,0,0.8)' // Darker tooltip background
       }
     },
     scales: {
         x: {
             title: {
                 display: true,
-                text: 'Date'
+                text: 'Date',
+                font: {
+                    size: 14
+                },
+                color: '#555'
             },
             ticks: {
+                // Instead of maxTicksLimit, let Chart.js decide better for autoSkip
                 autoSkip: true,
-                maxTicksLimit: 10
+                maxRotation: 45, // Rotate labels if needed
+                minRotation: 0,
+                font: {
+                    size: 12
+                }
+            },
+            grid: {
+                display: false // Optional: Hide vertical grid lines
             }
         },
         y: {
             title: {
                 display: true,
-                text: 'Price (USD)'
+                text: 'Price (USD)',
+                font: {
+                    size: 14
+                },
+                color: '#555'
             },
-            beginAtZero: false
+            beginAtZero: false,
+            ticks: {
+                font: {
+                    size: 12
+                },
+                callback: function(value, index, values) {
+                    return '$' + value.toFixed(2); // Format y-axis labels as currency
+                }
+            },
+            grid: {
+                color: 'rgba(0,0,0,0.05)' // Lighter horizontal grid lines
+            }
         }
     }
   };
@@ -208,7 +278,6 @@ function App() {
     <div style={{ padding: '20px', maxWidth: '960px', margin: '0 auto', fontFamily: 'Arial, sans-serif', backgroundColor: '#f9f9f9', borderRadius: '8px', boxShadow: '0 2px 10px rgba(0,0,0,0.1)' }}>
       <h1 style={{ textAlign: 'center', color: '#333' }}>Stock Market Dashboard</h1>
 
-      {/* Message area for user feedback */}
       {message && (
         <p style={{
           color: message.startsWith('Error:') || message.startsWith('Rate Limit') ? 'red' : 'green',
@@ -229,12 +298,12 @@ function App() {
           value={newStockSymbol}
           onChange={(e) => setNewStockSymbol(e.target.value.toUpperCase())}
           placeholder="Enter stock symbol (e.g., AAPL)"
-          disabled={loading} 
+          disabled={loading}
           style={{ padding: '10px', marginRight: '10px', border: '1px solid #ccc', borderRadius: '4px', flexGrow: 1, maxWidth: '300px', backgroundColor: loading ? '#e9e9e9' : 'white' }}
         />
         <button
           type="submit"
-          disabled={loading} 
+          disabled={loading}
           style={{
             padding: '10px 20px',
             backgroundColor: loading ? '#6c757d' : '#4CAF50',
@@ -245,7 +314,7 @@ function App() {
             fontSize: '16px'
           }}
         >
-          {loading ? 'Processing...' : 'Add Stock'} {/* Button text changes */}
+          {loading ? 'Processing...' : 'Add Stock'}
         </button>
       </form>
 
@@ -262,7 +331,7 @@ function App() {
                 <span style={{ fontWeight: 'bold', marginRight: '10px', color: '#333' }}>{stock.symbol}</span>
                 <button
                   onClick={() => handleRemoveStock(stock.symbol)}
-                  disabled={loading} 
+                  disabled={loading}
                   style={{
                     background: loading ? '#bbbbbb' : '#dc3545',
                     color: 'white', border: 'none', padding: '6px 12px',

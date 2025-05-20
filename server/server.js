@@ -46,16 +46,23 @@ const fetchStockData = async (symbol) => {
 
         if (data['Error Message']) {
             console.error(`Alpha Vantage Error for ${symbol}:`, data['Error Message']);
-            return null;
+            // Check for specific rate limit message
+            if (data['Error Message'].includes('Thank you for using Alpha Vantage! Our standard API call frequency is 5 calls per minute and 500 calls per day.')) {
+                return { error: 'RATE_LIMIT', message: 'Alpha Vantage API rate limit exceeded. Please wait a minute.' };
+            }
+            return { error: 'API_ERROR', message: data['Error Message'] };
         }
         if (data['Note'] && data['Note'].includes('thank you for using Alpha Vantage!')) {
             console.warn(`Alpha Vantage Rate Limit Hit for ${symbol}. Please wait.`, data['Note']);
             // This is a common message for rate limits on free tier
-            return null; // Or handle as needed, e.g., retry after some time
+            return { error: 'RATE_LIMIT', message: 'Alpha Vantage API rate limit exceeded. Please wait a minute.' };
+        }
+        if (Object.keys(data).length === 0) { // Sometimes an empty object is returned for invalid symbols
+            return { error: 'INVALID_SYMBOL', message: 'Invalid stock symbol.' };
         }
         if (!data['Time Series (Daily)']) {
             console.warn(`No daily time series data found for ${symbol}. API response:`, data);
-            return null;
+            return { error: 'NO_DATA', message: 'No historical data found for this symbol. It might be invalid or not traded.' };
         }
 
         const timeSeries = data['Time Series (Daily)'];
@@ -68,13 +75,13 @@ const fetchStockData = async (symbol) => {
                 low: parseFloat(timeSeries[date]['3. low']),
                 close: parseFloat(timeSeries[date]['4. close']),
                 volume: parseInt(timeSeries[date]['5. volume'])
-            })).sort((a, b) => new Date(a.date) - new Date(b.date)) // Sort by date ascending
+            })).sort((a, b) => new Date(a.date) - new Date(b.date))
         };
-        return formattedData;
+        return { success: true, data: formattedData }; // Return an object with success/error status
 
     } catch (error) {
         console.error(`Error fetching data for ${symbol} from Alpha Vantage:`, error.message);
-        return null;
+        return { error: 'FETCH_FAILED', message: 'Failed to connect to stock data API.' };
     }
 };
 
@@ -96,56 +103,64 @@ app.get('/', (req, res) => {
 io.on('connection', async (socket) => {
     console.log('A user connected:', socket.id);
 
-    // --- Send initial stocks to the new client (NEW) ---
     try {
         const activeStocks = await Stock.find({});
-        const stockDataPromises = activeStocks.map(stock => fetchStockData(stock.symbol));
-        const initialStockData = (await Promise.all(stockDataPromises)).filter(Boolean); // Filter out nulls from API errors
-        socket.emit('initialStocks', initialStockData); // Send initial data to this specific client
+        const stockDataPromises = activeStocks.map(async (stock) => {
+            const result = await fetchStockData(stock.symbol);
+            return result.success ? result.data : null; // Only return data if successful
+        });
+        const initialStockData = (await Promise.all(stockDataPromises)).filter(Boolean);
+        socket.emit('initialStocks', initialStockData);
     } catch (error) {
         console.error('Error sending initial stocks:', error);
+        socket.emit('stockError', { symbol: '', message: 'Failed to load initial stocks.' });
     }
 
-
-    // --- Handle 'addStock' event (NEW) ---
     socket.on('addStock', async (symbol) => {
         console.log(`Add stock request: ${symbol} by ${socket.id}`);
         try {
-            // Check if stock already exists in DB
             let stock = await Stock.findOne({ symbol });
             if (stock) {
                 console.log(`${symbol} already exists.`);
-                // Optionally send a message back to the client that it's already there
-                const existingStockData = await fetchStockData(symbol);
-                if (existingStockData) {
-                    socket.emit('stockAlreadyExists', existingStockData); // Send data for existing stock
+                const existingStockDataResult = await fetchStockData(symbol);
+                if (existingStockDataResult.success) {
+                    socket.emit('stockAlreadyExists', existingStockDataResult.data);
+                } else {
+                    // Handle case where it exists but we couldn't fetch current data (e.g., rate limit)
+                    socket.emit('stockError', { symbol, message: existingStockDataResult.message });
                 }
                 return;
             }
 
-            // Fetch data before saving to confirm it's a valid symbol
-            const data = await fetchStockData(symbol);
-            if (!data) {
-                console.log(`Failed to fetch data for ${symbol}. Not adding.`);
-                socket.emit('stockError', { symbol, message: 'Invalid symbol or failed to fetch data.' });
+            const dataResult = await fetchStockData(symbol); // Call the updated fetch function
+
+            if (dataResult.error) {
+                // Emit specific error types to the client
+                if (dataResult.error === 'RATE_LIMIT') {
+                    socket.emit('rateLimitExceeded', { symbol, message: dataResult.message });
+                } else if (dataResult.error === 'INVALID_SYMBOL' || dataResult.error === 'NO_DATA') {
+                    socket.emit('stockError', { symbol, message: `Could not find data for ${symbol}. Please check the symbol.` });
+                } else {
+                    socket.emit('stockError', { symbol, message: `Failed to fetch data for ${symbol}: ${dataResult.message}` });
+                }
                 return;
             }
 
-            // Save new stock to DB
             stock = new Stock({ symbol });
             await stock.save();
             console.log(`Stock added to DB: ${symbol}`);
 
-            // Broadcast the new stock data to all connected clients
-            io.emit('stockAdded', data);
+            io.emit('stockAdded', dataResult.data); // Emit the successful data
 
         } catch (error) {
-            if (error.code === 11000) { // MongoDB duplicate key error
+            if (error.code === 11000) {
                 console.warn(`Attempted to add duplicate stock: ${symbol}`);
-                // Still fetch and send data if it exists, as it might be a race condition
-                const existingStockData = await fetchStockData(symbol);
-                if (existingStockData) {
-                    io.emit('stockAdded', existingStockData); // Treat as 'added' for other clients
+                const existingStockDataResult = await fetchStockData(symbol);
+                if (existingStockDataResult.success) {
+                    io.emit('stockAdded', existingStockDataResult.data);
+                } else {
+                    // If duplicate but couldn't fetch data, inform the sender
+                    socket.emit('stockAlreadyExists', { symbol, message: existingStockDataResult.message });
                 }
             } else {
                 console.error(`Error adding stock ${symbol}:`, error);

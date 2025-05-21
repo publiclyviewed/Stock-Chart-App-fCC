@@ -14,7 +14,7 @@ import {
   Legend,
 } from 'chart.js';
 // NEW: Import specific Chart.js utilities for tooltips
-import { Tooltip as ChartTooltip } from 'chart.js';
+
 
 ChartJS.register(
   CategoryScale,

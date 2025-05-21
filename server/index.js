@@ -11,9 +11,11 @@ const axios = require('axios'); // For making HTTP requests to external APIs
 
 const app = express();
 const server = http.createServer(app);
+
+const allowedOrigin = process.env.CLIENT_ORIGIN || 'http://localhost:3000';
 const io = socketIo(server, {
     cors: {
-        origin: "http://localhost:3000",
+        origin: allowedOrigin,
         methods: ["GET", "POST"]
     }
 });
@@ -30,14 +32,12 @@ const stockSchema = new mongoose.Schema({
         unique: true,
         uppercase: true
     },
-    // We'll store the raw data from Alpha Vantage, or just the symbol and fetch data on demand
-    // For now, let's just store the symbol, and fetch data when needed.
-    // This keeps the DB lean if we only need to store active stocks.
+    
 });
 
 const Stock = mongoose.model('Stock', stockSchema);
 
-// --- Helper function to fetch stock data from Alpha Vantage (NEW) ---
+// --- Helper function to fetch stock data from Alpha Vantage 
 const fetchStockData = async (symbol) => {
     const url = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${symbol}&outputsize=compact&apikey=${ALPHA_VANTAGE_API_KEY}`;
     try {
@@ -86,7 +86,9 @@ const fetchStockData = async (symbol) => {
 };
 
 // Middleware
-app.use(cors());
+app.use(cors({
+    origin: allowedOrigin
+}));
 app.use(express.json());
 
 // MongoDB Connection
